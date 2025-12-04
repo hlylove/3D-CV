@@ -86,7 +86,7 @@ class ShapeNetPartDataset(Dataset):
         logger = get_root_logger()
         logger.info(
             "Totally {} x {} samples in {} set.".format(
-                len(self.data_idx), self.loop, split
+                len(self.data_list), self.loop, split
             )
         )
 
@@ -129,7 +129,7 @@ class ShapeNetPartDataset(Dataset):
 
     def prepare_test_data(self, idx):
         # load data
-        data_idx = self.data_idx[idx % len(self.data_idx)]
+        data_idx = idx % len(self.data_list)
         data = np.loadtxt(self.data_list[data_idx]).astype(np.float32)
         cls_token = self.token2category[
             os.path.basename(os.path.dirname(self.data_list[data_idx]))
@@ -147,7 +147,7 @@ class ShapeNetPartDataset(Dataset):
         return data_dict
 
     def get_data_name(self, idx):
-        data_idx = self.data_idx[idx % len(self.data_idx)]
+        data_idx = idx % len(self.data_list)
         return os.path.basename(self.data_list[data_idx]).split(".")[0]
 
     def __getitem__(self, idx):
@@ -157,4 +157,4 @@ class ShapeNetPartDataset(Dataset):
             return self.prepare_train_data(idx)
 
     def __len__(self):
-        return len(self.data_idx) * self.loop
+        return len(self.data_list) * self.loop
