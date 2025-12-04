@@ -1,7 +1,7 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 128  # bs: total bs in all gpus
+batch_size = 256  # bs: total bs in all gpus, def 32
 num_worker = 8
 batch_size_val = 8
 empty_cache = False
@@ -51,16 +51,17 @@ model = dict(
 
 # scheduler settings
 epoch = 300
-optimizer = dict(type="AdamW", lr=0.001, weight_decay=0.01)
+# ref rl 0.001
+optimizer = dict(type="AdamW", lr=0.0028, weight_decay=0.01)
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.001, 0.0001],
+    max_lr=[0.001, 0.0028],
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=1000.0,
 )
-param_dicts = [dict(keyword="block", lr=0.0001)]
+param_dicts = [dict(keyword="block", lr=0.0028)]
 
 # dataset settings
 dataset_type = "ShapeNetPartDataset"
@@ -70,48 +71,87 @@ data = dict(
     num_classes=50,
     ignore_index=-1,
     names=[
+        # Airplane (4 parts) - OK
         "Airplane_wing",
         "Airplane_body",
         "Airplane_tail",
         "Airplane_engine",
+        
+        # Bag (2 parts) - OK
         "Bag_handle",
         "Bag_body",
+        
+        # Cap (2 parts) - OK
         "Cap_panels",
         "Cap_peak",
+        
+        # Car (4 parts) - YOU HAD 3
+        "Car_body",       # Missing in your list (usually index 8 or 11)
         "Car_wheel",
         "Car_hood",
         "Car_roof",
+        
+        # Chair (4 parts) - OK
         "Chair_leg",
         "Chair_arm",
         "Chair_back",
         "Chair_seat",
+        
+        # Earphone (3 parts) - YOU HAD 2
         "Earphone_earphone",
         "Earphone_headband",
+        "Earphone_cord",  # Missing in your list
+        
+        # Guitar (3 parts) - OK
         "Guitar_head",
         "Guitar_body",
         "Guitar_neck",
+        
+        # Knife (2 parts) - OK
         "Knife_handle",
         "Knife_blade",
+        
+        # Lamp (4 parts) - YOU HAD 3
         "Lamp_canopy",
         "Lamp_lampshade",
         "Lamp_base",
+        "Lamp_bulb",      # Missing in your list
+        
+        # Laptop (2 parts) - YOU HAD 1
         "Laptop_keyboard",
+        "Laptop_screen",  # Missing in your list
+        
+        # Motorbike (6 parts) - YOU HAD 5
         "Motorbike_wheel",
         "Motorbike_handle",
         "Motorbike_gas_tank",
         "Motorbike_light",
         "Motorbike_seat",
+        "Motorbike_frame", # Missing in your list
+        
+        # Mug (2 parts) - YOU HAD 1
         "Mug_handle",
+        "Mug_body",        # Missing in your list
+        
+        # Pistol (3 parts) - OK
         "Pistol_trigger_and_guard",
         "Pistol_handle",
         "Pistol_barrel",
+        
+        # Rocket (3 parts) - OK
         "Rocket_nose",
         "Rocket_body",
         "Rocket_fin",
+        
+        # Skateboard (3 parts) - YOU HAD 2
         "Skateboard_wheel",
         "Skateboard_deck",
+        "Skateboard_axle", # Missing in your list
+        
+        # Table (3 parts) - YOU HAD 2
         "Table_leg",
-        "Table_top"
+        "Table_top",
+        "Table_connector"  # Missing in your list
     ],
     train=dict(
         type=dataset_type,
