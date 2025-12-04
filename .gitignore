@@ -30,3 +30,5 @@ __pycache__/
 
 # Mac系统文件
 .DS_Store
+
+test_results/
