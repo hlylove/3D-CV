@@ -38,23 +38,24 @@ python pointcept/datasets/preprocessing/shapenetpart/preprocess_shapenetpart.py 
 # Without normals (faster)
 python pointcept/datasets/preprocessing/shapenetpart/preprocess_shapenetpart.py \
     --raw_dir PartAnnotation \
-    --output_dir data/shapenetcore_partanno_segmentation_benchmark_v0_normal
+    --output_dir data/shapenetcore_partanno_segmentation_benchmark_v0_base
 ```
 
 ### 4. Train
 
 ```bash
 # With normals
-sh scripts/train.sh -g 4 -d shapenetpart -c partseg-pt-v3m1-1-normal -n shapenetpart-ptv3
+sh scripts/train.sh -d shapenetpart -c partseg-pt-v3m1-1-normal -n shapenetpart-ptv3
 
 # Without normals
-sh scripts/train.sh -g 4 -d shapenetpart -c partseg-pt-v3m1-0-base -n shapenetpart-ptv3-base
+sh scripts/train.sh -d shapenetpart -c partseg-pt-v3m1-0-base -n shapenetpart-ptv3-base
+
 ```
 
 ### 5. Test
 
 ```bash
-sh scripts/test.sh -g 4 -d shapenetpart -n shapenetpart-ptv3 -w model_best
+sh scripts/test.sh -d shapenetpart -n shapenetpart-ptv3 -w model_best
 ```
 
 ## Dataset

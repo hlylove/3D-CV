@@ -1,0 +1,162 @@
+import torch
+import numpy as np
+import argparse
+import os
+import json
+from tqdm import tqdm
+from pathlib import Path
+from pointcept.models import build_model
+from pointcept.utils.config import Config
+from pointcept.datasets.transform import Compose, Collect, GridSample, NormalizeCoord, CenterShift, ToTensor
+import open3d as o3d
+
+def estimate_normals(points):
+    """Estimate normals using Open3D to match model input requirements."""
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+    pcd.orient_normals_consistent_tangent_plane(k=15)
+    return np.asarray(pcd.normals).astype(np.float32)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True, help="Path to your config.py")
+    parser.add_argument("--checkpoint", required=True, help="Path to model_best.pth")
+    parser.add_argument("--out_dir", required=True, help="Folder to save the .txt results")
+    parser.add_argument("--device", default="cuda", help="Device to use")
+    args = parser.parse_args()
+
+    # 1. Setup
+    cfg = Config.fromfile(args.config)
+    os.makedirs(args.out_dir, exist_ok=True)
+    
+    # 2. Build Model
+    print(f"Loading model from {args.checkpoint}...")
+    model = build_model(cfg.model).to(args.device)
+    checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+    # Strip 'module.' prefix if present
+    new_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(new_state_dict)
+    model.eval()
+
+    # 3. Define Transform Pipeline
+    # We apply the same transforms as 'train' except we don't shuffle or jitter
+    transform_pipeline = Compose([
+        CenterShift(apply_z=True),
+        NormalizeCoord(),
+        GridSample(grid_size=0.01, hash_type="fnv", mode="train", return_grid_coord=True),
+        ToTensor(),
+        Collect(keys=("coord", "grid_coord", "segment"), feat_keys=["coord", "norm"])
+    ])
+
+    # 4. Load Test File List
+    # Based on your preprocessing script, the split file is here:
+    split_file = os.path.join(cfg.data_root, "train_test_split", "shuffled_test_file_list.json")
+    
+    if not os.path.exists(split_file):
+        print(f"Error: Could not find split file at {split_file}")
+        return
+
+    with open(split_file, "r") as f:
+        test_files = json.load(f)
+
+    print(f"Found {len(test_files)} files in the test set.")
+    print(f"Saving results to: {args.out_dir}")
+
+    # 5. Inference Loop
+    for file_rel_path in tqdm(test_files):
+        # file_rel_path looks like "shape_data/02691156/1a04e3eab45ca15dd86060f189eb133"
+        # But your dataset root is "data/shapenetcore_..." and preprocessing saves to "{category}/{id}.txt"
+        
+        # We need to construct the actual path to the .txt file created by your pre-processing script.
+        # Your pre-processing script saves files as: output_dir / synset_id / sample_id.txt
+        # The list contains "shape_data/synset_id/sample_id"
+        
+        parts = file_rel_path.split("/")
+        synset_id = parts[-2]
+        sample_id = parts[-1]
+        
+        # Reconstruct path to the pre-processed data (which has XYZ + Normals + Labels)
+        # Note: We load this to get the exact original points
+        file_path = os.path.join(cfg.data_root, synset_id, f"{sample_id}.txt")
+        
+        if not os.path.exists(file_path):
+            # Fallback: try loading without .txt extension if that's how it's stored
+            file_path = os.path.join(cfg.data_root, synset_id, sample_id)
+            if not os.path.exists(file_path):
+                print(f"Skipping missing file: {file_path}")
+                continue
+
+        # Load Data (N, 7) -> XYZ, Normals, Label
+        try:
+            data = np.loadtxt(file_path).astype(np.float32)
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            continue
+
+        raw_coord = data[:, :3]
+        raw_normals = data[:, 3:6]
+        
+        # Prepare input for model
+        input_dict = {
+            "coord": raw_coord,
+            "norm": raw_normals,
+            "segment": np.full((len(raw_coord),), -1).astype(np.int32) # Dummy labels
+        }
+        
+        # Apply transforms (includes GridSampling)
+        # Pointcept models run on Voxelized data (fewer points than raw)
+        input_dict = transform_pipeline(input_dict)
+        
+        # Add batch/offset dims
+        input_dict["offset"] = torch.tensor([input_dict["coord"].shape[0]], dtype=torch.int)
+        
+        # Move to GPU
+        for key in input_dict:
+            if isinstance(input_dict[key], torch.Tensor):
+                input_dict[key] = input_dict[key].unsqueeze(0).to(args.device)
+                if key in ["coord", "grid_coord", "segment", "offset"]:
+                     input_dict[key] = input_dict[key].squeeze(0)
+
+        # Run Model
+        with torch.no_grad():
+            retval = model(input_dict)
+            seg_logits = retval["seg_logits"] # Shape: [Num_Voxel_Points, 50]
+            pred_labels_voxel = torch.argmax(seg_logits, dim=1).cpu().numpy()
+
+        # Interpolate Voxel predictions back to Original Points (Nearest Neighbor)
+        # Because 'GridSample' reduced the point count, we must map back.
+        
+        # 1. Build KDTree on the Voxel Coordinates (that the model saw)
+        voxel_coords = input_dict["coord"].cpu().numpy() # These are the grid centers
+        
+        # 2. Query the original Raw Coordinates against the Voxel Coordinates
+        # "For every raw point, find the nearest voxel center and take its label"
+        voxel_pcd = o3d.geometry.PointCloud()
+        voxel_pcd.points = o3d.utility.Vector3dVector(voxel_coords)
+        kdtree = o3d.geometry.KDTreeFlann(voxel_pcd)
+        
+        final_preds = []
+        # Querying one by one is slow in Python, but safe. 
+        # For speed, we can do batch query if memory allows, but simple loop is fine for inference scripts.
+        # Optimization: Use scipy cKDTree or Open3D batch search if available.
+        
+        # Faster approach:
+        import scipy.spatial
+        tree = scipy.spatial.cKDTree(voxel_coords)
+        _, indices = tree.query(raw_coord, k=1)
+        final_preds = pred_labels_voxel[indices]
+
+        # Save to TXT
+        # Structure: output_dir / synset_id / sample_id.txt
+        save_folder = os.path.join(args.out_dir, synset_id)
+        os.makedirs(save_folder, exist_ok=True)
+        save_path = os.path.join(save_folder, f"{sample_id}.txt")
+        
+        np.savetxt(save_path, final_preds, fmt="%d")
+
+    print("Done.")
+
+if __name__ == "__main__":
+    main()
