@@ -1,8 +1,8 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 32  # bs: total bs in all gpus
-num_worker = 16
+batch_size = 128  # bs: total bs in all gpus
+num_worker = 8
 batch_size_val = 8
 empty_cache = False
 enable_amp = True
@@ -69,6 +69,50 @@ data_root = "data/shapenetcore_partanno_segmentation_benchmark_v0_normal"
 data = dict(
     num_classes=50,
     ignore_index=-1,
+    names=[
+        "Airplane_wing",
+        "Airplane_body",
+        "Airplane_tail",
+        "Airplane_engine",
+        "Bag_handle",
+        "Bag_body",
+        "Cap_panels",
+        "Cap_peak",
+        "Car_wheel",
+        "Car_hood",
+        "Car_roof",
+        "Chair_leg",
+        "Chair_arm",
+        "Chair_back",
+        "Chair_seat",
+        "Earphone_earphone",
+        "Earphone_headband",
+        "Guitar_head",
+        "Guitar_body",
+        "Guitar_neck",
+        "Knife_handle",
+        "Knife_blade",
+        "Lamp_canopy",
+        "Lamp_lampshade",
+        "Lamp_base",
+        "Laptop_keyboard",
+        "Motorbike_wheel",
+        "Motorbike_handle",
+        "Motorbike_gas_tank",
+        "Motorbike_light",
+        "Motorbike_seat",
+        "Mug_handle",
+        "Pistol_trigger_and_guard",
+        "Pistol_handle",
+        "Pistol_barrel",
+        "Rocket_nose",
+        "Rocket_body",
+        "Rocket_fin",
+        "Skateboard_wheel",
+        "Skateboard_deck",
+        "Table_leg",
+        "Table_top"
+    ],
     train=dict(
         type=dataset_type,
         split="train",

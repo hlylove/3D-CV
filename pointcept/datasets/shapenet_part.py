@@ -126,6 +126,9 @@ class ShapeNetPartDataset(Dataset):
             self.cache[data_idx] = (coord, norm, segment, cls_token)
 
         data_dict = dict(coord=coord, norm=norm, segment=segment, cls_token=cls_token)
+
+        data_dict["index_valid_keys"] = ["coord", "norm", "segment"]
+        
         data_dict = self.transform(data_dict)
         return data_dict
 

@@ -64,7 +64,7 @@ param_dicts = [dict(keyword="block", lr=0.0001)]
 
 # dataset settings
 dataset_type = "ShapeNetPartDataset"
-data_root = "data/shapenetcore_partanno_segmentation_benchmark_v0_normal"
+data_root = "data/shapenetcore_partanno_segmentation_benchmark_v0_base"
 
 data = dict(
     num_classes=50,
