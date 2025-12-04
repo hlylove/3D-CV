@@ -50,12 +50,21 @@ sh scripts/train.sh -d shapenetpart -c partseg-pt-v3m1-1-normal -n shapenetpart-
 # Without normals
 sh scripts/train.sh -d shapenetpart -c partseg-pt-v3m1-0-base -n shapenetpart-ptv3-base
 
+# resume With normals
+sh scripts/train.sh -d shapenetpart -c partseg-pt-v3m1-1-normal -n shapenetpart-ptv3 -r true -w model_best
+
 ```
 
 ### 5. Test
 
 ```bash
-sh scripts/test.sh -d shapenetpart -n shapenetpart-ptv3 -w model_best
+sh scripts/test.sh -d shapenetpart -c partseg-pt-v3m1-1-normal -n shapenetpart-ptv3 -w model_best
+
+python save_test_preds.py \
+  --config configs/shapenetpart/partseg-pt-v3m1-1-normal.py \
+  --checkpoint exp/shapenetpart1/shapenetpart-ptv3/model/model_best.pth \
+  --out_dir test_results
+
 ```
 
 ## Dataset

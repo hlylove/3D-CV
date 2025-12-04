@@ -142,6 +142,9 @@ class ShapeNetPartDataset(Dataset):
         coord, norm, segment = data[:, :3], data[:, 3:6], data[:, 6].astype(np.int32)
 
         data_dict = dict(coord=coord, norm=norm, cls_token=cls_token)
+
+        data_dict["index_valid_keys"] = ["coord", "norm"]
+
         data_dict = self.transform(data_dict)
         data_dict_list = []
         for aug in self.aug_transform:

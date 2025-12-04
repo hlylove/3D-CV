@@ -3,20 +3,12 @@ import numpy as np
 import argparse
 import os
 import json
+import scipy.spatial
 from tqdm import tqdm
-from pathlib import Path
 from pointcept.models import build_model
 from pointcept.utils.config import Config
-from pointcept.datasets.transform import Compose, Collect, GridSample, NormalizeCoord, CenterShift, ToTensor
+from pointcept.datasets.transform import Compose
 import open3d as o3d
-
-def estimate_normals(points):
-    """Estimate normals using Open3D to match model input requirements."""
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
-    pcd.orient_normals_consistent_tangent_plane(k=15)
-    return np.asarray(pcd.normals).astype(np.float32)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -34,24 +26,37 @@ def main():
     print(f"Loading model from {args.checkpoint}...")
     model = build_model(cfg.model).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    
+    # Handle both 'state_dict' and raw checkpoint formats
     state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-    # Strip 'module.' prefix if present
+    # Strip 'module.' prefix if present (common in DDP training)
     new_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    
     model.load_state_dict(new_state_dict)
     model.eval()
 
-    # 3. Define Transform Pipeline
-    # We apply the same transforms as 'train' except we don't shuffle or jitter
-    transform_pipeline = Compose([
-        CenterShift(apply_z=True),
-        NormalizeCoord(),
-        GridSample(grid_size=0.01, hash_type="fnv", mode="train", return_grid_coord=True),
-        ToTensor(),
-        Collect(keys=("coord", "grid_coord", "segment"), feat_keys=["coord", "norm"])
-    ])
+    # 3. Define Transform Pipeline (CORRECTED: Uses dicts now)
+    # These parameters must match your config settings
+    test_transform_cfg = [
+        dict(type="CenterShift", apply_z=True),
+        dict(type="NormalizeCoord"),
+        dict(
+            type="GridSample",
+            grid_size=0.01,
+            hash_type="fnv",
+            mode="train",
+            return_grid_coord=True,
+        ),
+        dict(type="ToTensor"),
+        dict(
+            type="Collect",
+            keys=("coord", "grid_coord", "segment"),
+            feat_keys=["coord", "norm"],
+        ),
+    ]
+    transform_pipeline = Compose(test_transform_cfg)
 
     # 4. Load Test File List
-    # Based on your preprocessing script, the split file is here:
     split_file = os.path.join(cfg.data_root, "train_test_split", "shuffled_test_file_list.json")
     
     if not os.path.exists(split_file):
@@ -66,29 +71,23 @@ def main():
 
     # 5. Inference Loop
     for file_rel_path in tqdm(test_files):
-        # file_rel_path looks like "shape_data/02691156/1a04e3eab45ca15dd86060f189eb133"
-        # But your dataset root is "data/shapenetcore_..." and preprocessing saves to "{category}/{id}.txt"
-        
-        # We need to construct the actual path to the .txt file created by your pre-processing script.
-        # Your pre-processing script saves files as: output_dir / synset_id / sample_id.txt
-        # The list contains "shape_data/synset_id/sample_id"
-        
+        # file_rel_path example: "shape_data/02691156/1a04e3eab45ca15dd86060f189eb133"
         parts = file_rel_path.split("/")
         synset_id = parts[-2]
         sample_id = parts[-1]
         
-        # Reconstruct path to the pre-processed data (which has XYZ + Normals + Labels)
-        # Note: We load this to get the exact original points
+        # Construct path to the pre-processed data (XYZ + Normals + GT Labels)
+        # We need this file to get the original raw coordinates for nearest neighbor mapping
         file_path = os.path.join(cfg.data_root, synset_id, f"{sample_id}.txt")
         
+        # Fallback if extension is missing or different
         if not os.path.exists(file_path):
-            # Fallback: try loading without .txt extension if that's how it's stored
             file_path = os.path.join(cfg.data_root, synset_id, sample_id)
             if not os.path.exists(file_path):
                 print(f"Skipping missing file: {file_path}")
                 continue
 
-        # Load Data (N, 7) -> XYZ, Normals, Label
+        # Load Data (N, 7) -> XYZ(3), Normals(3), Label(1)
         try:
             data = np.loadtxt(file_path).astype(np.float32)
         except Exception as e:
@@ -102,14 +101,14 @@ def main():
         input_dict = {
             "coord": raw_coord,
             "norm": raw_normals,
-            "segment": np.full((len(raw_coord),), -1).astype(np.int32) # Dummy labels
+            # We provide a dummy segment because 'Collect' transform expects this key
+            "segment": np.full((len(raw_coord),), -1).astype(np.int32)
         }
         
-        # Apply transforms (includes GridSampling)
-        # Pointcept models run on Voxelized data (fewer points than raw)
+        # Apply transforms (Pointcept will handle the dictionary build internally)
         input_dict = transform_pipeline(input_dict)
         
-        # Add batch/offset dims
+        # Add batch/offset dims required for sparse Point Transformers
         input_dict["offset"] = torch.tensor([input_dict["coord"].shape[0]], dtype=torch.int)
         
         # Move to GPU
@@ -125,31 +124,18 @@ def main():
             seg_logits = retval["seg_logits"] # Shape: [Num_Voxel_Points, 50]
             pred_labels_voxel = torch.argmax(seg_logits, dim=1).cpu().numpy()
 
-        # Interpolate Voxel predictions back to Original Points (Nearest Neighbor)
-        # Because 'GridSample' reduced the point count, we must map back.
+        # Interpolation: Map Voxel predictions back to Original Raw Points
+        # Because 'GridSample' reduced the point count, we use Nearest Neighbor to upsample.
+        voxel_coords = input_dict["coord"].cpu().numpy() # The points the model actually saw
         
-        # 1. Build KDTree on the Voxel Coordinates (that the model saw)
-        voxel_coords = input_dict["coord"].cpu().numpy() # These are the grid centers
-        
-        # 2. Query the original Raw Coordinates against the Voxel Coordinates
-        # "For every raw point, find the nearest voxel center and take its label"
-        voxel_pcd = o3d.geometry.PointCloud()
-        voxel_pcd.points = o3d.utility.Vector3dVector(voxel_coords)
-        kdtree = o3d.geometry.KDTreeFlann(voxel_pcd)
-        
-        final_preds = []
-        # Querying one by one is slow in Python, but safe. 
-        # For speed, we can do batch query if memory allows, but simple loop is fine for inference scripts.
-        # Optimization: Use scipy cKDTree or Open3D batch search if available.
-        
-        # Faster approach:
-        import scipy.spatial
+        # Use Scipy KDTree for fast lookup
         tree = scipy.spatial.cKDTree(voxel_coords)
         _, indices = tree.query(raw_coord, k=1)
+        
+        # Assign the label of the nearest voxel center to the raw point
         final_preds = pred_labels_voxel[indices]
 
         # Save to TXT
-        # Structure: output_dir / synset_id / sample_id.txt
         save_folder = os.path.join(args.out_dir, synset_id)
         os.makedirs(save_folder, exist_ok=True)
         save_path = os.path.join(save_folder, f"{sample_id}.txt")
